@@ -1,0 +1,33 @@
+cabal-version:      2.4
+name:               poly
+version:            0.1.0.0
+synopsis:           A compiler supporting higher-rank polymorphism
+
+-- A longer description of the package.
+-- description:
+homepage:
+
+-- A URL where users can report bugs.
+-- bug-reports:
+license:            MIT
+license-file:       LICENSE
+author:             Mark Barbone
+maintainer:         mark.l.barbone@gmail.com
+
+-- A copyright notice.
+-- copyright:
+-- category:
+
+executable poly
+    main-is:          Main.hs
+
+    -- Modules included in this executable, other than Main.
+    other-modules:    Src, Poly, Builtins, Elab, ElabUtils
+
+    default-extensions: ImportQualifiedPost, BangPatterns, BlockArguments,
+                        TupleSections, DeriveFunctor, DeriveFoldable,
+                        DeriveTraversable, GeneralizedNewtypeDeriving,
+                        LambdaCase, RecordWildCards
+    build-depends:      base, containers, text, mtl, writer-cps-mtl, parsec
+    hs-source-dirs:   src
+    default-language: Haskell2010
