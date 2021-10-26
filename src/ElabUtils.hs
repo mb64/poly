@@ -1,5 +1,6 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecursiveDo #-}
 
 -- | Monad and utils used by the elaborator to generate core IR.
 --
@@ -13,12 +14,14 @@ module ElabUtils
   , Name
   , Hole(..)
   , Ty(..)
+  , debugTy
   , srcTyToTy
   , Value
   , M
   , runM
   , TypeError(..)
   , typeError
+  , underExtendedCtx
   , var
   , lit
   , app
@@ -40,10 +43,12 @@ import Poly hiding (Value, Ty(..))
 import Poly qualified
 import Src qualified
 import Builtins
+import Utils
 
 import Data.Text (Text)
-import Data.IntMap.Strict (IntMap)
-import Data.IntMap.Strict qualified as IMap
+import Data.Text qualified as T
+import Data.IntMap.Lazy (IntMap)
+import Data.IntMap.Lazy qualified as IMap
 import Data.Map.Strict qualified as Map
 -- import Control.Monad.Cont
 -- import Control.Monad.Reader
@@ -52,6 +57,7 @@ import Control.Monad.Writer.CPS
 import Control.Monad.RWS.Strict
 import Control.Exception (Exception, throw)
 import Data.Coerce
+import Data.Char
 import Data.IORef
 import Data.Monoid
 import Debug.Trace
@@ -59,10 +65,14 @@ import Debug.Trace
 type Lvl = Int
 
 -- | A hole in a type.
---
--- The level in 'Empty lvl' represents its scope: when filling it in, the only
--- allowed type variables are those < lvl.
-data Hole = Empty Lvl | Filled Ty
+data Hole
+  = Filled Ty
+  | Empty Lvl
+  -- ^ The level represents its scope: when filling it in, the  only allowed
+  -- type variables are those < lvl.
+  | Generalized Lvl TId
+  -- ^ The hole was filled during let-generalization.
+  -- During let-generalization, holes get filled with 'Generalized Lvl TId'
 
 data Ty = TVar Lvl
         | TFun Ty Ty
@@ -79,21 +89,39 @@ data Ty = TVar Lvl
 --  * Scope of holes: in '∀ x. ... [H] ...', the scope of the hole '[H]' never
 --    includes the type variable 'x'.
 
+-- TODO: clean this up a bit
+debugTy :: Lvl -> Ty -> IO String
+debugTy lvl = go (replicate lvl "x") False
+  where
+    parens p s = if p then "(" ++ s ++ ")" else s
+    subscript c = "₀₁₂₃₄₅₆₇₈₉" !! (ord c - ord '0')
+    go ctx _ (TVar v) = pure $ T.unpack (ctx !! v) ++ showSubscript v
+    go ctx p (TFun a b) = (\x y -> parens p $ x ++ " -> " ++ y) <$> go ctx True a <*> go ctx False b
+    go ctx p (TForall n ty) = parens p . (("forall " ++ T.unpack n ++ showSubscript (length ctx) ++ ". ") ++) <$> go (ctx ++ [n]) False ty
+    go ctx p (THole ref) = readIORef ref >>= \case
+      Empty l -> pure $ "[level " ++ show l ++ "]"
+      Filled ty -> (\x -> "[" ++ x ++ "]") <$> go ctx False ty
+      Generalized l tid -> pure $ "[generalized " ++ show l ++ " " ++ show tid ++ "]"
+    go ctx _ (TPair a b) = (\x y -> "(" ++ x ++ ", " ++ y ++ ")") <$> go ctx False a <*> go ctx False b
+    go _ _ TUnit = pure "unit"
+    go _ _ TInt = pure "int"
+
 
 -- | Convert a source-code 'Src.Ty' to a typechecker 'Ty', at a given level
 --
 -- TODO: check the type isn't impredicative
-srcTyToTy :: Lvl -> Src.Ty -> Ty
-srcTyToTy = go Map.empty
+srcTyToTy :: Lvl -> Src.Ty -> M Ty
+srcTyToTy lvl = go Map.empty lvl
   where
-    go !env !lvl (Src.TVar name) = -- TODO better errors
-      Map.findWithDefault (error "type variable not in scope") name env
-    go !env !lvl Src.TUnit = TUnit
-    go !env !lvl Src.TInt = TInt
-    go !env !lvl (Src.TPair a b) = TPair (go env lvl a) (go env lvl b)
-    go !env !lvl (Src.TFun a b) = TFun (go env lvl a) (go env lvl b)
-    go !env !lvl (Src.TForall name ty) =
-      TForall name $ go (Map.insert name (TVar lvl) env) (lvl + 1) ty
+    go !env !l Src.THole = THole <$> freshHole lvl
+    go !env !l (Src.TVar name) = -- TODO better errors
+      pure $ Map.findWithDefault (error "type variable not in scope") name env
+    go !env !l Src.TUnit = pure TUnit
+    go !env !l Src.TInt = pure TInt
+    go !env !l (Src.TPair a b) = TPair <$> go env l a <*> go env l b
+    go !env !l (Src.TFun a b) = TFun <$> go env l a <*> go env l b
+    go !env !l (Src.TForall name ty) =
+      TForall name <$> go (Map.insert name (TVar l) env) (l + 1) ty
 
 
 -- General strategy: we first build up a `Exp' GonnaBeATy`, where each
@@ -135,6 +163,10 @@ instance Exception TypeError
 
 typeError :: Text -> M a
 typeError = liftIO . throw . TypeError
+
+-- | TODO: document
+underExtendedCtx :: Poly.Ty -> M a -> M a
+underExtendedCtx ty = local (extendCtx ty)
 
 
 -- some local helper functions
@@ -252,17 +284,19 @@ deref (THole ref) = liftIO $ go ref
         writeIORef ref (Filled contents)
         pure contents
       Filled contents -> pure contents
+      Generalized _ _ -> error "internal error"
 deref x = pure x
 
 -- | Fill an empty hole
 fill :: IORef Hole -> Hole -> M ()
 fill ref contents = liftIO $ modifyIORef' ref \case
   Empty _ -> contents
-  Filled _ -> error "internal error: can only fill empty holes"
+  _ -> error "internal error: can only fill empty holes"
 
 -- | A fresh hole at the specified level
 freshHole :: Lvl -> M (IORef Hole)
 freshHole l = liftIO $ newIORef (Empty l)
+
 
 -- | Instantiate a 'TForall' with a fresh hole.
 --
@@ -309,9 +343,6 @@ instantiate lvl ty = do
 --   [at lvl 4] ⊢  (∀. v₄ -> (∀. v₅)) <: v₃ -> v₃
 -- That's what this function does ('moveUnderBinders 3 4 lhs' in this case)
 --
--- It's also used in let-generalization, which introduces new foralls at the
--- start of a type, and so needs to shift the type over.
---
 -- Edge case with holes: since the scope of any holes under a quantifier won't
 -- include the quantified over variable, we can ignore empty holes when
 -- re-numbering binders.
@@ -336,37 +367,37 @@ moveUnderBinders oldLvl newLvl = go
 --
 -- TODO: document how this works.
 generalizeLet :: Lvl -> Name -> Value -> Ty -> M (Value, Ty)
-generalizeLet lvl n val ty = do
-    ((ty', lvl'), w) <- runWriterT (runStateT (go ty) lvl)
-    ty'' <- iter (lvl'-lvl) (TForall "t") <$> moveUnderBinders (lvl+1) lvl' ty'
-    val' <- letBind n ty'' (appEndo w val)
-    pure (val', ty'')
-  where
-    go :: Ty -> StateT Lvl (WriterT (Endo Value) M) Ty
-    go = lift . lift . deref >=> \case
-      TVar l -> pure $ TVar l
-      TUnit -> pure TUnit
-      TInt -> pure TInt
-      TPair a b -> TPair <$> go a <*> go b
-      TFun a b -> TFun <$> go a <*> go b
-      THole ref -> do
-        Empty l <- liftIO $ readIORef ref
-        if l < lvl then pure $ THole ref else do
+generalizeLet lvl n val ty = mdo
+  -- important: go returns its result lazily
+  let go :: Ty -> StateT Lvl (WriterT (Endo Value) M) Ty
+      -- FIXME: <= or < ?
+      go (TVar l) = pure $ if l <= lvl then TVar l else TVar (l - lvl - 1 + lvl')
+      go TUnit = pure TUnit
+      go TInt = pure TInt
+      go (TPair a b) = TPair <$> go a <*> go b
+      go (TFun a b) = TFun <$> go a <*> go b
+      go (TForall n ty) = TForall n <$> go ty
+      go (THole ref) = liftIO (readIORef ref) >>= \case
+        Filled ty -> go ty
+        Generalized lvl _ -> pure (TVar lvl)
+        Empty l -> if l < lvl then pure (THole ref) else do
+          -- add another TLam
           tid <- lift $ lift freshTy
-          tell $ Endo $ TLam "t" tid
-          -- HACK (see below)
-          liftIO $ writeIORef ref $! Filled (TVar (-coerce tid-1))
-          tlamLvl <- get
+          newBinderLvl <- get
           modify' (+1)
-          pure $ TVar tlamLvl
-    -- TODO: this does not fuse, due to cross-module inlining issues.
-    -- Probably worth filing a GHC bug report.
-    iter n f x = iterate f x !! n
+          tell $ Endo $ TLam "t" tid
+          -- set the hole to Generalized
+          lift $ lift $ fill ref (Generalized newBinderLvl tid)
+          pure (TVar newBinderLvl)
+  ((ty', lvl'), w) <- runWriterT (runStateT (go ty) lvl)
+  let tyWithForalls = iter (lvl'-lvl) (TForall "t") ty'
+      valWithTLams = appEndo w val
+  (, tyWithForalls) <$> letBind n tyWithForalls valWithTLams
 
 
 resolveTy :: Ctx -> Ty -> StateT Int IO Poly.Ty
 resolveTy ctx@(Ctx lvl env) ty = case ty of
-  TVar lvl -> pure $ env IMap.! lvl
+  TVar lvl -> pure (env IMap.! lvl)
   TUnit -> pure Poly.TUnit
   TInt -> pure Poly.TInt
   TPair a b -> Poly.TPair <$> resolveTy ctx a <*> resolveTy ctx b
@@ -378,11 +409,9 @@ resolveTy ctx@(Ctx lvl env) ty = case ty of
   THole ref -> do
     contents <- liftIO $ readIORef ref
     case contents of
-      Empty _ -> error "ambiguous type" -- TODO better error
-      -- HACK: (Filled (TVar -tid-1)) is used to denote tyvars that have been
-      -- generalized with TLam argument 'tid'
-      Filled (TVar l)
-        | l < 0 -> pure $ Poly.TVar (TId (-l-1))
+      Empty _ -> pure Poly.TUnit -- error "ambiguous type" -- TODO better error
       Filled ty -> resolveTy ctx ty
+      Generalized _ tid -> pure (Poly.TVar tid)
+
 
 

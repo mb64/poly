@@ -1,0 +1,5 @@
+let
+  val id = fn x => x
+  val f = fn (g : forall a. a -> a) => g 12
+in f id end
+

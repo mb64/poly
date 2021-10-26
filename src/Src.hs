@@ -48,7 +48,7 @@ isSyntacticValue (EAnnot e _) = isSyntacticValue e
 isSyntacticValue _ = False
 
 -- | Top-level declarations/definitions
--- 
+--
 -- TODO: more things (standalone type declarations? imports? modules?)
 data Top = Defn Name (Maybe Ty) Exp
          deriving Show

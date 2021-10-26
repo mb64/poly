@@ -152,17 +152,24 @@ check !ctx !lvl e ty = do
     (Src.ELam n Nothing body, TFun a b) -> lam n a \x ->
       check (Map.insert n (x,a) ctx) lvl body b
     (Src.ELam n (Just srcTy) body, TFun a b) -> lam n a \x -> do
-      let a' = srcTyToTy lvl srcTy
+      a' <- srcTyToTy lvl srcTy
       x' <- sub lvl x a a'
       check (Map.insert n (x',a') ctx) lvl body b
     (Src.ELam _ _ _, _) -> typeError "didn't expect a function"
-    (Src.ELet n Nothing val body, a) -> do
-      -- no provided type signature: generalize!
-      (x,ty) <- syn ctx (lvl+1) val
+    (Src.ELet n Nothing val body, a) | Src.isSyntacticValue val -> do
+      -- syntactic value: generalize!
+      (x,ty) <- underExtendedCtx (error "no type here") $ syn ctx (lvl+1) val
       (x',ty') <- generalizeLet lvl n x ty
       check (Map.insert n (x',ty') ctx) lvl body a
+    (Src.ELet n Nothing val body, a) -> do
+      -- value restriction: don't generalize :(
+      liftIO $ putStrLn $ "not generalizing " ++ show n
+      (x,ty) <- syn ctx lvl val
+      check (Map.insert n (x,ty) ctx) lvl body a
     (Src.ELet n (Just srcTy) val body, a) -> do
-      let ty = srcTyToTy lvl srcTy
+      -- TODO: this should also have generalization for when there's a
+      -- partial type signature
+      ty <- srcTyToTy lvl srcTy
       x <- check ctx lvl val ty
       x' <- letBind n ty x
       check (Map.insert n (x',ty) ctx) lvl body a
@@ -176,7 +183,7 @@ syn !ctx !lvl e = case e of
     maybe (typeError $ "variable " <> n <> " not in scope") pure
       $ Map.lookup n ctx
   Src.EAnnot e' srcTy -> do
-    let ty = srcTyToTy lvl srcTy
+    ty <- srcTyToTy lvl srcTy
     tm <- check ctx lvl e' ty
     pure (tm, ty)
   Src.EApp f arg -> do
@@ -185,18 +192,25 @@ syn !ctx !lvl e = case e of
   Src.ELam n srcTy body -> do
     -- a <- case srcTy of
     --   Nothing -> THole <$> freshHole lvl
-    --   Just srcTy -> pure $ srcTyToTy lvl srcTy
-    a <- maybe (THole <$> freshHole lvl) (pure . srcTyToTy lvl) srcTy
-    synlam n a \x ->
+    --   Just srcTy -> srcTyToTy lvl srcTy
+    a <- maybe (THole <$> freshHole lvl) (srcTyToTy lvl) srcTy
+    fmap (TFun a) <$> synlam n a \x ->
       syn (Map.insert n (x, a) ctx) lvl body
-  Src.ELet n Nothing val body -> do
-    -- no provided type signature: generalize!
-    -- TODO: value restriction
-    (x,ty) <- syn ctx (lvl+1) val
+  Src.ELet n Nothing val body | Src.isSyntacticValue val -> do
+    -- syntactic value: generalize!
+    (x,ty) <- underExtendedCtx (error "no type here") $ syn ctx (lvl+1) val
     (x',ty') <- generalizeLet lvl n x ty
+    -- for debugging:
+    liftIO $ putStrLn . ((T.unpack n ++ " : ") ++) =<< debugTy lvl ty'
     syn (Map.insert n (x',ty') ctx) lvl body
+  Src.ELet n Nothing val body -> do
+    -- value restriction: don't generalize :(
+    (x,ty) <- syn ctx lvl val
+    syn (Map.insert n (x,ty) ctx) lvl body
   Src.ELet n (Just srcTy) val body -> do
-    let ty = srcTyToTy lvl srcTy
+    -- TODO: this should also have generalization for when there's a partial
+    -- type signature
+    ty <- srcTyToTy lvl srcTy
     x <- check ctx lvl val ty
     x' <- letBind n ty x
     syn (Map.insert n (x',ty) ctx) lvl body

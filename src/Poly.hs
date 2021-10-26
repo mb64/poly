@@ -7,7 +7,10 @@
 module Poly where
 
 import Data.Text (Text)
+import Data.Text qualified as T
+import Data.IntMap.Strict qualified as IMap
 import Builtins
+import Utils
 
 type Name = Text
 
@@ -61,9 +64,17 @@ data Exp' ty
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
 
+-- TODO: pretty-printing
 
-
-
-
+prettyTy :: Ty -> String
+prettyTy = go IMap.empty False
+  where
+    parens p s = if p then "(" ++ s ++ ")" else s
+    go ctx _ (TVar (TId i)) = IMap.findWithDefault "UNNAMED" i ctx ++ showSubscript i
+    go ctx p (TFun a b) = parens p $ go ctx True a ++ " -> " ++ go ctx False b
+    go ctx p (TForall n (TId i) ty) = parens p $ "forall " ++ T.unpack n ++ showSubscript i ++ ". " ++ go (IMap.insert i (T.unpack n) ctx) False ty
+    go ctx _ (TPair a b) = "(" ++ go ctx False a ++ ", " ++ go ctx False b ++ ")"
+    go _ _ TUnit = "unit"
+    go _ _ TInt = "int"
 
 
