@@ -91,7 +91,7 @@ data Ty = TVar Lvl
 
 -- TODO: clean this up a bit
 debugTy :: Lvl -> Ty -> IO String
-debugTy lvl = go (replicate lvl "x") False
+debugTy lvl = go (replicate lvl "UNNAMED") False
   where
     parens p s = if p then "(" ++ s ++ ")" else s
     subscript c = "₀₁₂₃₄₅₆₇₈₉" !! (ord c - ord '0')
@@ -370,8 +370,10 @@ generalizeLet :: Lvl -> Name -> Value -> Ty -> M (Value, Ty)
 generalizeLet lvl n val ty = mdo
   -- important: go returns its result lazily
   let go :: Ty -> StateT Lvl (WriterT (Endo Value) M) Ty
-      -- FIXME: <= or < ?
-      go (TVar l) = pure $ if l <= lvl then TVar l else TVar (l - lvl - 1 + lvl')
+      go (TVar l) = pure $ case compare l lvl of
+        LT -> TVar l
+        EQ -> error "internal error: should not have type vars of this level"
+        GT -> TVar (l - lvl - 1 + lvl')
       go TUnit = pure TUnit
       go TInt = pure TInt
       go (TPair a b) = TPair <$> go a <*> go b

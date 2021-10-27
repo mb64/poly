@@ -1,5 +1,4 @@
 let
-  val id = fn x => x
-  val f = fn (g : forall a. a -> a) => g 12
+  fun id x = let val y = x in y end
+  fun f (g : forall a. a -> a) = 3 + g 4
 in f id end
-

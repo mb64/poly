@@ -13,7 +13,7 @@ import Control.Monad
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Functor
-import Text.Parsec (Parsec, parse, eof, try, optionMaybe, (<?>), oneOf)
+import Text.Parsec (Parsec, parse, eof, try, optionMaybe, option, (<?>), oneOf)
 import Text.Parsec.Char (letter, alphaNum, char, string)
 import Text.Parsec.Token
 import Text.Parsec.Expr
@@ -36,7 +36,7 @@ data Exp = EVar Name
          | EBuiltin Builtin
          | EApp Exp Exp
          | ELam Name (Maybe Ty) Exp
-         | ELet Name (Maybe Ty) Exp Exp
+         | ELet Name Ty Exp Exp
          | EAnnot Exp Ty
          -- | ELet [(Name, Maybe Ty, Exp)] Exp
          -- | EIf Exp Exp Exp
@@ -50,7 +50,7 @@ isSyntacticValue _ = False
 -- | Top-level declarations/definitions
 --
 -- TODO: more things (standalone type declarations? imports? modules?)
-data Top = Defn Name (Maybe Ty) Exp
+data Top = Defn Name Ty Exp
          deriving Show
 
 epair :: Exp -> Exp -> Exp
@@ -66,13 +66,13 @@ lam n f = ELam n Nothing (f (EVar n))
 
 -- lef f :: (forall a. a -> a) -> Int = λ x. x 3 in f (λ x. x)
 goodExample :: Exp
-goodExample = ELet "f" (Just ty) (lam "x" \x -> EApp x (ELit 3))
+goodExample = ELet "f" ty (lam "x" \x -> EApp x (ELit 3))
     $ EApp (EVar "f") (lam "x" \x -> x)
   where ty = TFun (tforall "a" \a -> TFun a a) TInt
 
 -- let f :: forall a. (forall s. s -> a) -> a = λ x. x 3 in f (λ x. x)
 badExample :: Exp
-badExample = ELet "f" (Just ty) (lam "x" \x -> EApp x (ELit 3))
+badExample = ELet "f" ty (lam "x" \x -> EApp x (ELit 3))
     $ EApp (EVar "f") (lam "x" \x -> x)
   where ty = tforall "a" \a -> TFun (tforall "s" \s -> TFun s a) a
 
@@ -164,7 +164,7 @@ exprParser :: Parsec String () Exp
     val = do
       reserved "val"
       n <- ident
-      t <- optionMaybe (reservedOp ":" *> typ)
+      t <- option THole (reservedOp ":" *> typ)
       reservedOp "="
       v <- expr
       pure (n,t,v)
@@ -172,11 +172,11 @@ exprParser :: Parsec String () Exp
       reserved "fun"
       n <- ident
       args <- some param
-      retTy <- optionMaybe (reservedOp ":" *> typ)
+      retTy <- option THole (reservedOp ":" *> typ)
       reservedOp "="
       body <- expr
-      let ty = foldr (\(_, argTy) -> TFun (fromMaybe THole argTy)) (fromMaybe THole retTy) args
-      pure (n, Just ty, foldr (uncurry ELam) body args)
+      let ty = foldr (\(_, argTy) -> TFun (fromMaybe THole argTy)) retTy args
+      pure (n, ty, foldr (uncurry ELam) body args)
 
     top = (\(n,ty,val) -> Defn n ty val) <$> defn
 

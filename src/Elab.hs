@@ -100,7 +100,7 @@ sub !lvl tm t1 t2 = liftA2 (,) (deref t1) (deref t2) >>= \case
 
 -- | 'subHoleTy lvl tm ref ty': fill in ref so that 'ref <: ty'
 --
--- Also takes a term 'tm : ref' and returns a term with type 'ty'
+-- Also takes a term 'tm : ref' and coerces it to type 'ty'
 subHoleTy :: Lvl -> Value -> IORef Hole -> Ty -> M Value
 subHoleTy !lvl tm ref ty = deref ty >>= \case
   TForall n a ->
@@ -118,7 +118,7 @@ subHoleTy !lvl tm ref ty = deref ty >>= \case
 
 -- | 'subTyHole lvl tm ty ref': fill in ref so that 'ty <: ref'
 --
--- Also takes a term 'tm : ty' and returns a term with type 'ref'
+-- Also takes a term 'tm : ty' and coerces it to type 'ref'
 subTyHole :: Lvl -> Value -> Ty -> IORef Hole -> M Value
 subTyHole !lvl tm ty ref = deref ty >>= \case
   TForall _ a -> do
@@ -147,7 +147,7 @@ check !ctx !lvl e ty = do
   case (e, ty') of
     (_, THole ref) -> do
       (tm, a) <- syn ctx lvl e
-      subHoleTy lvl tm ref a
+      subTyHole lvl tm a ref
     (_, TForall n a) -> tlam n $ check ctx (lvl + 1) e a
     (Src.ELam n Nothing body, TFun a b) -> lam n a \x ->
       check (Map.insert n (x,a) ctx) lvl body b
@@ -156,19 +156,15 @@ check !ctx !lvl e ty = do
       x' <- sub lvl x a a'
       check (Map.insert n (x',a') ctx) lvl body b
     (Src.ELam _ _ _, _) -> typeError "didn't expect a function"
-    (Src.ELet n Nothing val body, a) | Src.isSyntacticValue val -> do
+    (Src.ELet n srcTy val body, a) | Src.isSyntacticValue val -> do
       -- syntactic value: generalize!
-      (x,ty) <- underExtendedCtx (error "no type here") $ syn ctx (lvl+1) val
+      (x,ty) <- underExtendedCtx (error "no type here") $ do
+        ty <- srcTyToTy (lvl+1) srcTy
+        (,ty) <$> check ctx (lvl+1) val ty
       (x',ty') <- generalizeLet lvl n x ty
       check (Map.insert n (x',ty') ctx) lvl body a
-    (Src.ELet n Nothing val body, a) -> do
+    (Src.ELet n srcTy val body, a) -> do
       -- value restriction: don't generalize :(
-      liftIO $ putStrLn $ "not generalizing " ++ show n
-      (x,ty) <- syn ctx lvl val
-      check (Map.insert n (x,ty) ctx) lvl body a
-    (Src.ELet n (Just srcTy) val body, a) -> do
-      -- TODO: this should also have generalization for when there's a
-      -- partial type signature
       ty <- srcTyToTy lvl srcTy
       x <- check ctx lvl val ty
       x' <- letBind n ty x
@@ -196,20 +192,17 @@ syn !ctx !lvl e = case e of
     a <- maybe (THole <$> freshHole lvl) (srcTyToTy lvl) srcTy
     fmap (TFun a) <$> synlam n a \x ->
       syn (Map.insert n (x, a) ctx) lvl body
-  Src.ELet n Nothing val body | Src.isSyntacticValue val -> do
+  Src.ELet n srcTy val body | Src.isSyntacticValue val -> do
     -- syntactic value: generalize!
-    (x,ty) <- underExtendedCtx (error "no type here") $ syn ctx (lvl+1) val
+    (x,ty) <- underExtendedCtx (error "no type here") $ do
+      ty <- srcTyToTy (lvl+1) srcTy
+      (,ty) <$> check ctx (lvl+1) val ty
     (x',ty') <- generalizeLet lvl n x ty
     -- for debugging:
     liftIO $ putStrLn . ((T.unpack n ++ " : ") ++) =<< debugTy lvl ty'
     syn (Map.insert n (x',ty') ctx) lvl body
-  Src.ELet n Nothing val body -> do
+  Src.ELet n srcTy val body -> do
     -- value restriction: don't generalize :(
-    (x,ty) <- syn ctx lvl val
-    syn (Map.insert n (x,ty) ctx) lvl body
-  Src.ELet n (Just srcTy) val body -> do
-    -- TODO: this should also have generalization for when there's a partial
-    -- type signature
     ty <- srcTyToTy lvl srcTy
     x <- check ctx lvl val ty
     x' <- letBind n ty x
