@@ -71,9 +71,13 @@ unify t1 t2 = liftA2 (,) (deref t1) (deref t2) >>= \case
   (TInt, TInt) -> pure ()
   (TForall _ _, _) -> error "should be monotype?"
   (_, TForall _ _) -> error "should be monotype?"
-  -- TODO: pass around a mapping from type variables to their names in order to
-  -- pretty-print the types in the error message
-  _ -> typeError "(rigid) unification error :/"
+  (x, y) -> do
+    -- TODO: pass around a mapping from type variables to their names in order to
+    -- pretty-print the types in the error message
+    -- x' <- liftIO $ debugTy lvl x
+    -- y' <- liftIO $ debugTy lvl y
+    -- typeError $ "mismatch between " <> T.pack x' <> " and " <> T.pack y'
+    typeError "(rigid) unification error :/"
 
 
 -- | Fancy subsumption for potentially polymorphic types
@@ -138,7 +142,7 @@ subTyHole !lvl tm ty ref = deref ty >>= \case
 
 -- | The mutually recursive type inference functions (finally)
 
-type Ctx = Map Name (Value, Ty)
+type Ctx = Map Name (Value, Lvl, Ty)
 
 check :: Ctx -> Lvl -> Src.Exp -> Ty -> M Value
 -- check !ctx !lvl = uncurry $ traverse deref >=> \case
@@ -150,11 +154,11 @@ check !ctx !lvl e ty = do
       subTyHole lvl tm a ref
     (_, TForall n a) -> tlam n $ check ctx (lvl + 1) e a
     (Src.ELam n Nothing body, TFun a b) -> lam n a \x ->
-      check (Map.insert n (x,a) ctx) lvl body b
+      check (Map.insert n (x,lvl,a) ctx) lvl body b
     (Src.ELam n (Just srcTy) body, TFun a b) -> lam n a \x -> do
       a' <- srcTyToTy lvl srcTy
       x' <- sub lvl x a a'
-      check (Map.insert n (x',a') ctx) lvl body b
+      check (Map.insert n (x',lvl,a') ctx) lvl body b
     (Src.ELam _ _ _, _) -> typeError "didn't expect a function"
     (Src.ELet n srcTy val body, a) | Src.isSyntacticValue val -> do
       -- syntactic value: generalize!
@@ -162,22 +166,26 @@ check !ctx !lvl e ty = do
         ty <- srcTyToTy (lvl+1) srcTy
         (,ty) <$> check ctx (lvl+1) val ty
       (x',ty') <- generalizeLet lvl n x ty
-      check (Map.insert n (x',ty') ctx) lvl body a
+      check (Map.insert n (x',lvl,ty') ctx) lvl body a
     (Src.ELet n srcTy val body, a) -> do
       -- value restriction: don't generalize :(
       ty <- srcTyToTy lvl srcTy
       x <- check ctx lvl val ty
       x' <- letBind n ty x
-      check (Map.insert n (x',ty) ctx) lvl body a
+      check (Map.insert n (x',lvl,ty) ctx) lvl body a
     _ -> do
       (tm, a) <- syn ctx lvl e
       sub lvl tm a ty
 
 syn :: Ctx -> Lvl -> Src.Exp -> M (Value, Ty)
 syn !ctx !lvl e = case e of
-  Src.EVar n ->
-    maybe (typeError $ "variable " <> n <> " not in scope") pure
-      $ Map.lookup n ctx
+  Src.EVar n -> do
+    (val,l,ty) <- maybe (typeError $ "variable " <> n <> " not in scope") pure
+                    $ Map.lookup n ctx
+    case compare l lvl of
+      EQ -> pure (val, ty)
+      GT -> error "internal error"
+      LT -> (val,) <$> moveUnderBinders l lvl ty
   Src.EAnnot e' srcTy -> do
     ty <- srcTyToTy lvl srcTy
     tm <- check ctx lvl e' ty
@@ -191,7 +199,7 @@ syn !ctx !lvl e = case e of
     --   Just srcTy -> srcTyToTy lvl srcTy
     a <- maybe (THole <$> freshHole lvl) (srcTyToTy lvl) srcTy
     fmap (TFun a) <$> synlam n a \x ->
-      syn (Map.insert n (x, a) ctx) lvl body
+      syn (Map.insert n (x,lvl,a) ctx) lvl body
   Src.ELet n srcTy val body | Src.isSyntacticValue val -> do
     -- syntactic value: generalize!
     (x,ty) <- underExtendedCtx (error "no type here") $ do
@@ -200,13 +208,13 @@ syn !ctx !lvl e = case e of
     (x',ty') <- generalizeLet lvl n x ty
     -- for debugging:
     liftIO $ putStrLn . ((T.unpack n ++ " : ") ++) =<< debugTy lvl ty'
-    syn (Map.insert n (x',ty') ctx) lvl body
+    syn (Map.insert n (x',lvl,ty') ctx) lvl body
   Src.ELet n srcTy val body -> do
     -- value restriction: don't generalize :(
     ty <- srcTyToTy lvl srcTy
     x <- check ctx lvl val ty
     x' <- letBind n ty x
-    syn (Map.insert n (x',ty) ctx) lvl body
+    syn (Map.insert n (x',lvl,ty) ctx) lvl body
 
   Src.ELit x -> pure (lit x, TInt)
   Src.EBuiltin b -> builtin lvl b
