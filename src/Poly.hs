@@ -6,13 +6,10 @@
 -- Roughly, ANF'd System F with no impredicative polymorphism
 module Poly where
 
-import Data.Text (Text)
 import Data.Text qualified as T
 import Data.IntMap.Strict qualified as IMap
 import Builtins
 import Utils
-
-type Name = Text
 
 -- Types
 ------------------------------------------------------------

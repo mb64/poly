@@ -22,12 +22,12 @@ executable poly
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    other-modules:    Src, Utils, Poly, Builtins, Elab, ElabUtils
+    other-modules:    Src, Utils, Poly, Builtins, Elab, Elab.Types, Elab.Utils
 
     default-extensions: ImportQualifiedPost, BangPatterns, BlockArguments,
                         TupleSections, DeriveFunctor, DeriveFoldable,
                         DeriveTraversable, GeneralizedNewtypeDeriving,
                         LambdaCase, RecordWildCards
-    build-depends:      base, containers, text, mtl, writer-cps-mtl, parsec
+    build-depends:      base, containers, unordered-containers, text, mtl, writer-cps-mtl, parsec
     hs-source-dirs:   src
     default-language: Haskell2010

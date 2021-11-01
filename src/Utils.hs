@@ -3,6 +3,9 @@ module Utils where
 
 import Data.List
 import Data.Char
+import Data.Text (Text)
+
+type Name = Text
 
 -- TODO: iter does not fuse, due to cross-module inlining issues.
 -- Probably worth filing a GHC bug report.
