@@ -22,7 +22,7 @@ executable poly
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    other-modules:    Src, Utils, Poly, Builtins, Elab, Elab.Types, Elab.Utils
+    other-modules:    Src, Utils, Poly, Builtins, Elab, Elab.Types, Elab.Utils, Elab.Builtins
 
     default-extensions: ImportQualifiedPost, BangPatterns, BlockArguments,
                         TupleSections, DeriveFunctor, DeriveFoldable,
