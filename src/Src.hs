@@ -1,12 +1,10 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | The source AST.  Meant to be imported qualified
---
--- TODO: this module needs some attention
+-- | The source AST and parser.  Meant to be imported qualified
 module Src where
 
-import Builtins
+import Utils
 
 import Control.Applicative
 import Control.Monad
@@ -20,70 +18,53 @@ import Text.Parsec.Expr
 import Data.Maybe
 
 
-type Name = Text
+data Ty
+  = TVar Name
+  | THole -- _ in a type
+  | TPair Ty Ty
+  | TFun Ty Ty
+  | TForall Name Ty
+  deriving (Eq, Show)
 
-data Ty = TVar Name
-        | TUnit
-        | TInt
-        | THole -- _ in a type
-        | TPair Ty Ty
-        | TFun Ty Ty
-        | TForall Name Ty
-        deriving (Eq, Show)
+data Pat
+  = PWildcard
+  | PVar Name
+  | PConstr Name [Pat]
+  deriving (Eq, Show)
 
-data Exp = EVar Name
-         | ELit Int
-         | EBuiltin Builtin
-         | EApp Exp Exp
-         | ELam Name (Maybe Ty) Exp
-         | ELet Name Ty Exp Exp
-         | EAnnot Exp Ty
-         -- | ELet [(Name, Maybe Ty, Exp)] Exp
-         -- | EIf Exp Exp Exp
-        deriving (Eq, Show)
+data Exp
+  = EVar Name
+  | ELit Int
+  | EApp Exp Exp
+  | ELam Name (Maybe Ty) Exp
+  | EAnnot Exp Ty
+  | ECase Exp [(Pat, Exp)]
+  | EIf Exp Exp Exp
+  | ELet Defn Exp
+  deriving (Eq, Show)
 
-isSyntacticValue :: Exp -> Bool
-isSyntacticValue (ELam _ _ _) = True
-isSyntacticValue (EAnnot e _) = isSyntacticValue e
-isSyntacticValue _ = False
+data Defn
+  -- fun is generalizing letrec, val is non-generalizing non-recursive let
+  = Val Name Ty Exp
+  | Fun Name Ty Exp
+  -- Local datatypes!
+  | Datatype Name [(Name,[Ty])]
+  deriving (Eq, Show)
 
 -- | Top-level declarations/definitions
 --
 -- TODO: more things (standalone type declarations? imports? modules?)
-data Top = Defn Name Ty Exp
-         deriving Show
-
-epair :: Exp -> Exp -> Exp
-epair a b = EApp (EApp (EBuiltin Pair) a) b
-
-eunit :: Exp
-eunit = EBuiltin Unit
-
-tforall :: Name -> (Ty -> Ty) -> Ty
-tforall n f = TForall n (f (TVar n))
-lam :: Name -> (Exp -> Exp) -> Exp
-lam n f = ELam n Nothing (f (EVar n))
-
--- lef f :: (forall a. a -> a) -> Int = λ x. x 3 in f (λ x. x)
-goodExample :: Exp
-goodExample = ELet "f" ty (lam "x" \x -> EApp x (ELit 3))
-    $ EApp (EVar "f") (lam "x" \x -> x)
-  where ty = TFun (tforall "a" \a -> TFun a a) TInt
-
--- let f :: forall a. (forall s. s -> a) -> a = λ x. x 3 in f (λ x. x)
-badExample :: Exp
-badExample = ELet "f" ty (lam "x" \x -> EApp x (ELit 3))
-    $ EApp (EVar "f") (lam "x" \x -> x)
-  where ty = tforall "a" \a -> TFun (tforall "s" \s -> TFun s a) a
-
+-- data Top = Defn Name Ty Exp
+--          | Datatype Name [(Name, [Ty])]
+--          deriving Show
 
 -- From here on, it's just parsing/pretty-printing
 
--- TODO: parsing, pretty-printing
+-- TODO: pretty-printing
 
-parser :: Parsec String () [Top]
+-- parser :: Parsec String () [Top]
 exprParser :: Parsec String () Exp
-(parser, exprParser) = (whiteSpace *> many top, whiteSpace *> expr)
+exprParser = whiteSpace *> expr
   where
     TokenParser{..} = makeTokenParser LanguageDef{
         commentStart = "(*"
@@ -95,8 +76,8 @@ exprParser :: Parsec String () Exp
       , opStart = oneOf "!#$%&*+./<=>?@\\^|-~:"
       , opLetter = oneOf "!#$%&*+./<=>?@\\^|-~:"
       , reservedNames =
-        ["forall", "_", "if", "then", "else", "val", "let", "in", "end", "fun", "fn", "int"] -- TODO int is not reserved
-      , reservedOpNames = ["->", "=>", "=", ":", "*", "+", "-", "."]
+        ["forall", "_", "if", "then", "else", "val", "let", "in", "end", "fun", "fn"]
+      , reservedOpNames = ["->", "=>", "=", ":", "*", "+", "-", ".", "|"]
       , caseSensitive = True
       }
 
@@ -108,34 +89,34 @@ exprParser :: Parsec String () Exp
       reserved "in"
       exp <- expr
       reserved "end"
-      pure $ foldr (\(n,ty,val) -> ELet n ty val) exp ds
+      pure $ foldr ELet exp ds
 
     atomic = EVar <$> ident
       <|> ELit . fromInteger <$> natural
-      <|> try (parens (pure $ EBuiltin Unit))
+      <|> try (parens (pure $ EVar "()"))
       <|> parens expr
       <|> letExpr
       <?> "simple expression"
 
     factor = foldl1 EApp <$> some atomic
 
+    -- TODO: make if, fn, case prefix operators
     arithExpr = buildExpressionParser table factor
       <?> "arithmetic expression"
-    table = [[op "*" Mul], [op "+" Add, op "-" Sub]]
-    op name b =
-      Infix (reservedOp name $> \x y -> EApp (EApp (EBuiltin b) x) y) AssocLeft
+    table = [[op "*"], [op "+", op "-"]]
+    op o = Infix (reservedOp o $> \x y -> EApp (EApp (EVar (T.pack o)) x) y) AssocLeft
 
     annotExpr = do
       e <- arithExpr
       maybe e (EAnnot e) <$> optionMaybe (reservedOp ":" *> typ)
     ifExpr = do
       reserved "if"
-      _cond <- expr
+      cond <- expr
       reserved "then"
-      _trueBranch <- expr
+      trueBranch <- expr
       reserved "else"
-      _falseBranch <- expr
-      pure $ error "TODO: implement if expressions"
+      falseBranch <- expr
+      pure $ EIf cond trueBranch falseBranch
     lambda = do
       reserved "fn"
       args <- some param
@@ -149,9 +130,7 @@ exprParser :: Parsec String () Exp
       <|> parens ((,) <$> ident <* reservedOp ":" <*> (Just <$> typ))
       <?> "parameter"
 
-    simpleTyp = try (parens (pure TUnit))
-      <|> reserved "int" $> TInt
-      <|> reserved "_" $> THole
+    simpleTyp = reserved "_" $> THole
       <|> TVar <$> ident
       <|> parens typ
     typ :: Parsec String () Ty
@@ -159,7 +138,6 @@ exprParser :: Parsec String () Exp
       <|> flip (foldr TForall) <$> (reserved "forall" *> many ident) <*> (reservedOp "." *> typ)
       <?> "type"
 
-    -- currently no difference, but eventually 'fun' will be a letrec
     defn = val <|> fun <?> "definition"
     val = do
       reserved "val"
@@ -167,7 +145,7 @@ exprParser :: Parsec String () Exp
       t <- option THole (reservedOp ":" *> typ)
       reservedOp "="
       v <- expr
-      pure (n,t,v)
+      pure $ Val n t v
     fun = do
       reserved "fun"
       n <- ident
@@ -176,8 +154,6 @@ exprParser :: Parsec String () Exp
       reservedOp "="
       body <- expr
       let ty = foldr (\(_, argTy) -> TFun (fromMaybe THole argTy)) retTy args
-      pure (n, ty, foldr (uncurry ELam) body args)
-
-    top = (\(n,ty,val) -> Defn n ty val) <$> defn
+      pure $ Fun n ty (foldr (uncurry ELam) body args)
 
 

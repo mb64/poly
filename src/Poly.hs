@@ -8,7 +8,6 @@ module Poly where
 
 import Data.Text qualified as T
 import Data.IntMap.Strict qualified as IMap
-import Builtins
 import Utils
 
 -- Types
@@ -49,7 +48,8 @@ type Comp = Comp' Ty
 data Comp' ty
   = Val (Value' ty)
   | App (Value' ty) (Value' ty)
-  | Builtin Builtin [Value]
+  -- TODO
+  -- | Builtin Builtin [Value]
   -- | If (Value' ty) (Exp' ty) (Exp' ty) -- TODO
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
@@ -57,6 +57,8 @@ data Comp' ty
 type Exp = Exp' Ty
 data Exp' ty
   = Let Name Id ty (Comp' ty) (Exp' ty)
+  -- only recursively define values.
+  | LetRec Name Id ty (Value' ty) (Exp' ty)
   | Comp (Comp' ty)
   deriving (Show, Eq, Functor, Foldable, Traversable)
 

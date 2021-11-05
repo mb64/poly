@@ -18,7 +18,7 @@ main = do
       print e
       let ctx = Elab.initialCtx
       (ty, ir) <- Elab.runM $ do
-        (val, ty) <- Elab.syn ctx e
+        (val, ty) <- Elab.infer ctx e
         (, Comp (Val val)) <$> Elab.displayTyCtx ctx ty
       putStrLn $ "result : " ++ ty
       -- TODO: pretty-printers
