@@ -31,7 +31,8 @@ check :: Ctx -> Src.Exp -> TyVal -> M Value
 check !ctx e ty = do
   ty' <- deref ty
   case (e, ty') of
-    (_, VForall n a) -> do
+    (_, VForall n a) | Src.isSyntacticValue e -> do
+      -- Value restriction :/
       let x = VVar (ctxLvl ctx)
       tlam n \arg -> check (addTyToCtx n arg ctx) e (a $$ x)
     (Src.ELam n Nothing body, VFun a b) -> lam ctx n a \x ->
@@ -56,8 +57,7 @@ check !ctx e ty = do
 infer :: Ctx -> Src.Exp -> M (Value, TyVal)
 infer !ctx e = case e of
   Src.ELit x -> do
-    -- pure (lit x, the int type)
-    error "TODO: add built-in types to context"
+    pure (lit x, error "TODO: add built-in types to context")
   Src.EVar n -> case HMap.lookup n (boundVars ctx) of
     Nothing -> typeError $ "variable " <> n <> " not in scope"
     Just (val,ty) -> pure (val,ty)

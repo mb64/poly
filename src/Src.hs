@@ -17,7 +17,6 @@ import Text.Parsec.Token
 import Text.Parsec.Expr
 import Data.Maybe
 
-
 data Ty
   = TVar Name
   | THole -- _ in a type
@@ -51,12 +50,10 @@ data Defn
   | Datatype Name [(Name,[Ty])]
   deriving (Eq, Show)
 
--- | Top-level declarations/definitions
---
--- TODO: more things (standalone type declarations? imports? modules?)
--- data Top = Defn Name Ty Exp
---          | Datatype Name [(Name, [Ty])]
---          deriving Show
+isSyntacticValue :: Exp -> Bool
+isSyntacticValue ELam{} = True
+isSyntacticValue (EAnnot e _) = isSyntacticValue e
+isSyntacticValue _ = False
 
 -- From here on, it's just parsing/pretty-printing
 
