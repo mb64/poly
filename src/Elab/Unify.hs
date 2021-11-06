@@ -77,8 +77,20 @@ unifyHoleTy !ctx refX = deref >=> \case
 -- It also takes a term 'tm : a' and returns a term with type 'b'
 sub :: Ctx -> Value -> TyVal -> TyVal -> M Value
 sub !ctx tm t1 t2 = liftA2 (,) (deref t1) (deref t2) >>= \case
-  (VHole a, b) -> subHoleTy ctx tm a b
-  (a, VHole b) -> subTyHole ctx tm a b
+  (VHole a, b) -> do
+    Empty scope <- liftIO $ readIORef a
+    a' <- freshHole scope
+    tm' <- subHoleTy ctx a tm a' b
+    contents <- liftIO $ readIORef a'
+    fill a contents
+    pure tm'
+  (a, VHole b) -> do
+    Empty scope <- liftIO $ readIORef b
+    b' <- freshHole scope
+    tm' <- subTyHole ctx b tm a b'
+    contents <- liftIO $ readIORef b'
+    fill b contents
+    pure tm'
   (a, VForall n b) -> do
     let x = VVar (ctxLvl ctx)
     tlam n \arg -> sub (addTyToCtx n arg ctx) tm a (b $$ x)
@@ -91,45 +103,51 @@ sub !ctx tm t1 t2 = liftA2 (,) (deref t1) (deref t2) >>= \case
     sub ctx tm' a' b'
   (a, b) -> unify (ctxToUnifyCtx ctx) a b >> pure tm
 
--- | 'subHoleTy ctx tm hole ty': fill in hole so that 'hole <: ty'
+-- | 'subHoleTy ctx ref tm hole ty': fill in hole so that 'hole <: ty'
 --
 -- Also takes a term 'tm : hole' and coerces it to type 'ty'
-subHoleTy :: Ctx -> Value -> IORef Hole -> TyVal -> M Value
-subHoleTy !ctx tm hole ty = deref ty >>= \case
+subHoleTy :: Ctx -> IORef Hole -> Value -> IORef Hole -> TyVal -> M Value
+subHoleTy !ctx ref tm hole ty = deref ty >>= \case
   VForall n b -> do
     let x = VVar (ctxLvl ctx)
-    tlam n \arg -> subHoleTy (addTyToCtx n arg ctx) tm hole (b $$ x)
+    tlam n \arg -> subHoleTy (addTyToCtx n arg ctx) ref tm hole (b $$ x)
   VFun b b' -> do
-    liftIO $ putStrLn "subHoleTy of a function"
     Empty scope <- liftIO $ readIORef hole
     a <- freshHole scope
     a' <- freshHole scope
     fill hole $ Filled (VFun (VHole a) (VHole a'))
     lam ctx "eta" b \arg -> do
-      arg' <- subTyHole ctx arg b a
+      arg' <- subTyHole ctx ref arg b a
       tm' <- app ctx (VHole a') tm arg'
-      subHoleTy ctx tm' a' b'
-  b -> unifyHoleTy (ctxToUnifyCtx ctx) hole b >> pure tm
+      subHoleTy ctx ref tm' a' b'
+  b -> do
+    Empty scope <- liftIO $ readIORef ref
+    unifyHolePrechecks (ctxToUnifyCtx ctx) ref scope b
+    fill hole (Filled b)
+    pure tm
 
--- | 'subTyHole ctx tm ty hole': fill in hole so that 'ty <: hole'
+-- | 'subTyHole ctx ref tm ty hole': fill in hole so that 'ty <: hole'
 --
 -- Also takes a term 'tm : ty' and coerces it to type 'hole'
-subTyHole :: Ctx -> Value -> TyVal -> IORef Hole -> M Value
-subTyHole !ctx tm ty hole = deref ty >>= \case
+subTyHole :: Ctx -> IORef Hole -> Value -> TyVal -> IORef Hole -> M Value
+subTyHole !ctx ref tm ty hole = deref ty >>= \case
   VForall _ a -> do
     newHole <- VHole <$> freshHole (ctxLvl ctx)
-    subTyHole ctx (tapp ctx tm newHole) (a $$ newHole) hole
+    subTyHole ctx ref (tapp ctx tm newHole) (a $$ newHole) hole
   VFun a a' -> do
-    liftIO $ putStrLn "subTyHole of a function"
     Empty scope <- liftIO $ readIORef hole
     b <- freshHole scope
     b' <- freshHole scope
     fill hole $ Filled (VFun (VHole b) (VHole b'))
     lam ctx "eta" (VHole b) \arg -> do
-      arg' <- subHoleTy ctx arg b a
+      arg' <- subHoleTy ctx ref arg b a
       tm' <- app ctx a' tm arg'
-      subTyHole ctx tm' a' b'
-  a -> unifyHoleTy (ctxToUnifyCtx ctx) hole a >> pure tm
+      subTyHole ctx ref tm' a' b'
+  a -> do
+    Empty scope <- liftIO $ readIORef ref
+    unifyHolePrechecks (ctxToUnifyCtx ctx) ref scope a
+    fill hole (Filled a)
+    pure tm
 
 
 

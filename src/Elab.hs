@@ -44,7 +44,7 @@ check !ctx e ty = do
       ctx' <- define ctx defn
       check ctx' body a
     (Src.ECase _ _, a) -> error "TODO"
-    (Src.EIf cond then_ else_, a) ->
+    (Src.EIf cond then_ else_, a) -> do
       c <- check ctx cond (error "TODO: add built-in types to context")
       t <- check ctx then_ a
       e <- check ctx else_ a
@@ -131,7 +131,5 @@ define !ctx (Src.Fun n srcTy e) = do
 
 define !ctx (Src.Datatype n constrs) = do
   error "TODO"
-
-
 
 
